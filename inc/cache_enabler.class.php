@@ -2601,6 +2601,46 @@ final class Cache_Enabler {
             }
         }
 
+        // Post-process detected language items to remove obvious noise and prefer pretty URLs.
+        // 1) Remove items that point to static assets (icons, images, fonts, etc.).
+        // 2) Prefer prefix-style language URLs (/de) over query-style (?lang=de) when both exist.
+        if ( ! empty( $language_items ) ) {
+            // Remove static asset URLs.
+            $filtered = array();
+            $asset_ext_pattern = '/\.(png|jpg|jpeg|svg|gif|ico|css|js|map|woff2?|eot|ttf|otf|pdf)(?:\?.*)?$/i';
+
+            foreach ( $language_items as $url => $label ) {
+                // If url ends with asset extension, skip it.
+                if ( preg_match( $asset_ext_pattern, $url ) ) {
+                    continue;
+                }
+
+                $filtered[ $url ] = $label;
+            }
+
+            // Prefer prefix (/de) over query (?lang=de) when both exist for same host.
+            foreach ( $filtered as $url => $label ) {
+                $parsed = wp_parse_url( $url );
+                if ( empty( $parsed ) ) {
+                    continue;
+                }
+
+                // If query contains lang=CODE and there's a corresponding /CODE path, remove the query variant.
+                if ( ! empty( $parsed['query'] ) && preg_match( '/(?:^|&)lang=([^&]+)/', $parsed['query'], $m ) ) {
+                    $code = $m[1];
+                    $host = isset( $parsed['host'] ) ? $parsed['host'] : '';
+                    $scheme = isset( $parsed['scheme'] ) ? $parsed['scheme'] . '://' : 'https://';
+                    $candidate_path = rtrim( $scheme . $host . '/' . ltrim( $code, '/' ), '/' );
+
+                    if ( isset( $filtered[ $candidate_path ] ) ) {
+                        unset( $filtered[ $url ] );
+                    }
+                }
+            }
+
+            $language_items = $filtered;
+        }
+
         return $language_items;
     }
 
