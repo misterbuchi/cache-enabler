@@ -1262,133 +1262,24 @@ final class Cache_Enabler {
         $language_items = array();
         $site_home = rtrim( get_home_url(), '/' );
 
-        // WPML
-        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
-            $wpml_languages = null;
+        $language_items = self::get_language_items();
 
-            if ( has_filter( 'wpml_active_languages' ) ) {
-                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
-            } elseif ( function_exists( 'icl_get_languages' ) ) {
-                $wpml_languages = icl_get_languages( 'skip_missing=0' );
-            }
-
-            if ( is_array( $wpml_languages ) ) {
-                foreach ( $wpml_languages as $lang ) {
-                    $url = '';
-                    $label = '';
-                    $code = '';
-
-                    if ( ! empty( $lang['url'] ) ) {
-                        $url = rtrim( $lang['url'], '/' );
-                    } elseif ( ! empty( $lang['translated_home'] ) ) {
-                        $url = rtrim( $lang['translated_home'], '/' );
-                    }
-
-                    if ( ! empty( $lang['native_name'] ) ) {
-                        $label = $lang['native_name'];
-                    } elseif ( ! empty( $lang['translated_name'] ) ) {
-                        $label = $lang['translated_name'];
-                    } elseif ( ! empty( $lang['english_name'] ) ) {
-                        $label = $lang['english_name'];
-                    }
-
-                    if ( ! empty( $lang['language_code'] ) ) {
-                        $code = $lang['language_code'];
-                    } elseif ( ! empty( $lang['code'] ) ) {
-                        $code = $lang['code'];
-                    }
-
-                    if ( $url ) {
-                        $language_items[ $url ] = $label ? $label : $url;
-                    } elseif ( $code ) {
-                        $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $label ? $label : $code;
-                    }
-                }
-            }
-        }
-
-        // Polylang
-        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
-            $polylang_langs = pll_languages_list();
-
-            if ( is_array( $polylang_langs ) ) {
-                foreach ( $polylang_langs as $pll_lang ) {
-                    $url = pll_home_url( $pll_lang );
-                    $label = $pll_lang;
-
-                    if ( $url ) {
-                        $language_items[ rtrim( $url, '/' ) ] = $label;
-                    }
-                }
-            }
-        }
-
-        // qTranslate-X
-        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
-            $qlangs = qtranxf_getSortedLanguages();
-
-            if ( is_array( $qlangs ) ) {
-                foreach ( $qlangs as $k => $v ) {
-                    $code = is_string( $v ) ? $v : ( is_array( $v ) && ! empty( $v['code'] ) ? $v['code'] : '' );
-
-                    if ( $code ) {
-                        $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $code;
-                    }
-                }
-            }
-        }
-
-        // TranslatePress
-        if ( function_exists( 'trp_get_available_languages' ) ) {
-            $trp = trp_get_available_languages();
-
-            if ( is_array( $trp ) ) {
-                foreach ( $trp as $t ) {
-                    $code = is_array( $t ) && ! empty( $t['slug'] ) ? $t['slug'] : ( is_string( $t ) ? $t : '' );
-
-                    if ( $code ) {
-                        $language_items[ rtrim( get_home_url() . '/' . ltrim( $code, '/' ), '/' ) ] = $code;
-                    }
-                }
-            }
-        }
-
-        // Weglot (best-effort)
-        if ( function_exists( 'weglot_get_languages' ) ) {
-            $weglot_langs = weglot_get_languages();
-
-            if ( is_array( $weglot_langs ) ) {
-                foreach ( $weglot_langs as $code ) {
-                    $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $code;
-                }
-            }
-        }
-
-        // Additional custom language URLs from settings
-        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
-            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
-
-            foreach ( $lines as $line ) {
-                $line = trim( $line );
-
-                if ( $line === '' ) {
-                    continue;
-                }
-
-                if ( preg_match( '#^https?://#i', $line ) ) {
-                    $language_items[ rtrim( $line, '/' ) ] = $line;
-                } elseif ( strpos( $line, '/' ) === 0 ) {
-                    $language_items[ rtrim( get_home_url() . $line, '/' ) ] = $line;
-                } else {
-                    $language_items[ rtrim( add_query_arg( 'lang', $line, get_home_url() ), '/' ) ] = $line;
-                }
-            }
-        }
-
-        // Add language submenu items
+        // Add language submenu items only if the current page has a translation in that language.
+        $current_page_id = self::get_current_page_post_id();
         foreach ( $language_items as $lang_url => $label ) {
-            // Avoid adding the primary site home twice
+            // Avoid adding the primary site home twice.
             if ( rtrim( $lang_url, '/' ) === $site_home ) {
+                continue;
+            }
+
+            $lang_code = self::get_language_code_for_home_url( $lang_url );
+            $translated_page_id = 0;
+
+            if ( $current_page_id && $lang_code ) {
+                $translated_page_id = self::get_translated_page_id_for_language( $current_page_id, $lang_code );
+            }
+
+            if ( $current_page_id && $lang_code && ! $translated_page_id ) {
                 continue;
             }
 
@@ -1407,7 +1298,7 @@ final class Cache_Enabler {
             );
         }
 
-        // Page-level clear still for front-end
+        // Page-level clear still for front-end.
         if ( ! is_admin() ) {
             $wp_admin_bar->add_menu(
                 array(
@@ -1422,13 +1313,38 @@ final class Cache_Enabler {
                 )
             );
 
-            // If language items were detected, add per-language "Clear Page Cache for this page" submenu entries.
+            if ( $current_page_id ) {
+                $wp_admin_bar->add_menu(
+                    array(
+                        'id'     => 'cache_enabler_clear_page_translations',
+                        'href'   => wp_nonce_url( add_query_arg( array(
+                                        '_cache'  => 'cache-enabler',
+                                        '_action' => 'cleartranslations',
+                                        'post_id' => (int) $current_page_id,
+                                    ) ), 'cache_enabler_clear_cache_nonce' ),
+                        'parent' => 'cache_enabler_clear_page_cache',
+                        'title'  => esc_html__( 'Clear All Translations', 'cache-enabler' ),
+                        'meta'   => array( 'title' => esc_html__( 'Clear All Translations', 'cache-enabler' ) ),
+                    )
+                );
+            }
+
+            // If language items were detected, add per-language page-clear entries for translated versions only.
             if ( ! empty( $language_items ) && is_array( $language_items ) ) {
-                // Current request path (including query) sanitized similar to clearurl handling.
                 $request_path = Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false );
 
                 foreach ( $language_items as $lang_url => $label ) {
-                    // Build a nonce'd URL to trigger a per-language page clear.
+                    $lang_code = self::get_language_code_for_home_url( $lang_url );
+                    $translated_page_id = 0;
+
+                    if ( $current_page_id && $lang_code ) {
+                        $translated_page_id = self::get_translated_page_id_for_language( $current_page_id, $lang_code );
+                    }
+
+                    if ( $current_page_id && $lang_code && ! $translated_page_id ) {
+                        continue;
+                    }
+
                     $wp_admin_bar->add_menu(
                         array(
                             'id'     => 'cache_enabler_clear_page_cache_lang_' . md5( $lang_url ),
@@ -1439,8 +1355,8 @@ final class Cache_Enabler {
                                             'page'     => rawurlencode( $request_path ),
                                         ) ), 'cache_enabler_clear_cache_nonce' ),
                             'parent' => 'cache_enabler_clear_page_cache',
-                            'title'  => esc_html__( 'For', 'cache-enabler' ) . ' ' . esc_html( $label ),
-                            'meta'   => array( 'title' => esc_html( $label ) ),
+                            'title'  => esc_html__( 'Clear Current Language', 'cache-enabler' ) . ' (' . esc_html( $label ) . ')',
+                            'meta'   => array( 'title' => esc_html__( 'Clear Current Language', 'cache-enabler' ) . ' (' . esc_html( $label ) . ')' ),
                         )
                     );
                 }
@@ -1518,7 +1434,7 @@ final class Cache_Enabler {
      */
     public static function process_clear_cache_request() {
 
-        if ( empty( $_GET['_cache'] ) || empty( $_GET['_action'] ) || $_GET['_cache'] !== 'cache-enabler' || ( $_GET['_action'] !== 'clear' && $_GET['_action'] !== 'clearurl' && $_GET['_action'] !== 'clearlang' && $_GET['_action'] !== 'clearlangurl' ) ) {
+        if ( empty( $_GET['_cache'] ) || empty( $_GET['_action'] ) || $_GET['_cache'] !== 'cache-enabler' || ( $_GET['_action'] !== 'clear' && $_GET['_action'] !== 'clearurl' && $_GET['_action'] !== 'clearlang' && $_GET['_action'] !== 'clearlangurl' && $_GET['_action'] !== 'cleartranslations' ) ) {
             return;
         }
 
@@ -1647,35 +1563,13 @@ final class Cache_Enabler {
                 }
 
                 if ( filter_var( $lang_url, FILTER_VALIDATE_URL ) ) {
-                    // Try to detect a translated post permalink for the current page when possible.
                     $target = '';
 
-                    // Build absolute current URL to resolve a post ID if possible.
-                    $current_home = rtrim( get_home_url(), '/' );
-                    $current_full = $current_home . ( strpos( $page_path, '/' ) === 0 ? $page_path : '/' . ltrim( $page_path, '/' ) );
-
-                    $post_id = 0;
-                    // url_to_postid expects a full URL.
-                    if ( function_exists( 'url_to_postid' ) ) {
-                        $post_id = url_to_postid( $current_full );
-                    }
-
-                    // Try to find language code for this lang host.
+                    $post_id = self::get_current_page_post_id();
                     $lang_code = self::get_language_code_for_home_url( $lang_url );
 
                     if ( $post_id && $lang_code ) {
-                        // WPML: try apply_filters('wpml_object_id', ...)
-                        $translated_id = false;
-
-                        if ( has_filter( 'wpml_object_id' ) || function_exists( 'icl_object_id' ) ) {
-                            $translated_id = apply_filters( 'wpml_object_id', $post_id, get_post_type( $post_id ), false, $lang_code );
-                        }
-
-                        // Polylang
-                        if ( ! $translated_id && function_exists( 'pll_get_post' ) ) {
-                            $translated_id = pll_get_post( $post_id, $lang_code );
-                        }
-
+                        $translated_id = self::get_translated_page_id_for_language( $post_id, $lang_code );
                         if ( $translated_id ) {
                             $permalink = get_permalink( $translated_id );
                             if ( $permalink ) {
@@ -1693,6 +1587,32 @@ final class Cache_Enabler {
                     // Clear this specific page cache (no subpages) on the target host.
                     self::clear_page_cache_by_url( $target );
                     $cleared_urls[] = $target;
+                }
+            }
+
+            if ( ! empty( $cleared_urls ) ) {
+                set_transient( 'cache_enabler_cleared_urls_' . get_current_user_id(), $cleared_urls, MINUTE_IN_SECONDS );
+            }
+        } elseif ( $_GET['_action'] === 'cleartranslations' ) {
+            $cleared_urls = array();
+            $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+
+            if ( $post_id ) {
+                $translation_ids = self::get_post_translation_ids( $post_id );
+
+                if ( empty( $translation_ids ) ) {
+                    $translation_ids = array( $post_id );
+                }
+
+                foreach ( $translation_ids as $translation_id ) {
+                    $translation_url = get_permalink( $translation_id );
+                    if ( $translation_url ) {
+                        $translation_url = rtrim( $translation_url, '/' );
+                        if ( ! in_array( $translation_url, $cleared_urls, true ) ) {
+                            self::clear_page_cache_by_url( $translation_url );
+                            $cleared_urls[] = $translation_url;
+                        }
+                    }
                 }
             }
 
@@ -2425,210 +2345,135 @@ final class Cache_Enabler {
 
         // If enabled, clear language-specific caches when a multilingual plugin is present.
         if ( ! empty( Cache_Enabler_Engine::$settings['clear_language_caches'] ) ) {
-            // WPML: prefer the modern filter if available, fallback to icl_get_languages().
-            $wpml_languages = null;
+            $site_home = rtrim( get_home_url( $blog_id ), '/' );
 
-            if ( has_filter( 'wpml_active_languages' ) ) {
-                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
-            } elseif ( function_exists( 'icl_get_languages' ) ) {
-                // Older WPML installs expose icl_get_languages().
-                $wpml_languages = icl_get_languages( 'skip_missing=0' );
-            }
-
-            if ( is_array( $wpml_languages ) ) {
-                foreach ( $wpml_languages as $lang ) {
-                    $lang_url = '';
-
-                    if ( ! empty( $lang['url'] ) ) {
-                        $lang_url = rtrim( $lang['url'], '/' );
-                    } elseif ( ! empty( $lang['translated_home'] ) ) {
-                        $lang_url = rtrim( $lang['translated_home'], '/' );
-                    } elseif ( ! empty( $lang['code'] ) ) {
-                        $lang_url = rtrim( add_query_arg( 'lang', $lang['code'], get_home_url( $blog_id ) ), '/' );
-                    }
-
-                    if ( $lang_url ) {
-                        $site_home = rtrim( get_home_url( $blog_id ), '/' );
-
-                        if ( $lang_url !== $site_home && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                            self::clear_page_cache_by_url( $lang_url, $lang_args );
-                            $cleared_urls[] = $lang_url;
-                        }
-                    }
-                }
-            }
-
-            // Polylang: use pll_home_url() for each language slug if available.
-            if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
-                $polylang_langs = pll_languages_list();
-
-                if ( is_array( $polylang_langs ) ) {
-                    foreach ( $polylang_langs as $pll_lang ) {
-                        $lang_url = pll_home_url( $pll_lang );
-
-                        if ( ! empty( $lang_url ) ) {
-                            $lang_url = rtrim( $lang_url, '/' );
-                            $site_home = rtrim( get_home_url( $blog_id ), '/' );
-
-                            if ( $lang_url !== $site_home && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                                self::clear_page_cache_by_url( $lang_url, $lang_args );
-                                $cleared_urls[] = $lang_url;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // qTranslate-X (qtranxf) languages.
-            if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
-                $qlangs = qtranxf_getSortedLanguages();
-
-                if ( is_array( $qlangs ) ) {
-                    foreach ( $qlangs as $k => $v ) {
-                        $code = '';
-
-                        if ( is_string( $v ) ) {
-                            $code = $v;
-                        } elseif ( is_array( $v ) && ! empty( $v['code'] ) ) {
-                            $code = $v['code'];
-                        }
-
-                        if ( $code ) {
-                            // Try common URL formats: prefix and query var.
-                            $candidates = array();
-                            $candidates[] = rtrim( get_home_url( $blog_id ), '/' ) . '/' . ltrim( $code, '/' );
-                            $candidates[] = rtrim( add_query_arg( 'lang', $code, get_home_url( $blog_id ) ), '/' );
-
-                            foreach ( $candidates as $lang_url ) {
-                                if ( $lang_url !== '' && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                                    self::clear_page_cache_by_url( $lang_url, $lang_args );
-                                    $cleared_urls[] = $lang_url;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // TranslatePress detection: try helper functions/classes then fallback to codes from option if present.
-            if ( function_exists( 'trp_get_available_languages' ) ) {
-                $trp_langs = trp_get_available_languages();
-
-                if ( is_array( $trp_langs ) ) {
-                    foreach ( $trp_langs as $trp_lang ) {
-                        $lang_url = '';
-
-                        if ( is_array( $trp_lang ) && ! empty( $trp_lang['slug'] ) ) {
-                            $code = $trp_lang['slug'];
-                        } elseif ( is_string( $trp_lang ) ) {
-                            $code = $trp_lang;
-                        } else {
-                            $code = '';
-                        }
-
-                        if ( $code ) {
-                            if ( function_exists( 'trp_get_home_url' ) ) {
-                                $lang_url = rtrim( trp_get_home_url( $code ), '/' );
-                            } else {
-                                // Fallback: prefix path or query var.
-                                $lang_url = rtrim( get_home_url( $blog_id ), '/' ) . '/' . ltrim( $code, '/' );
-                            }
-
-                            if ( $lang_url && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                                self::clear_page_cache_by_url( $lang_url, $lang_args );
-                                $cleared_urls[] = $lang_url;
-                            }
-                        }
-                    }
-                }
-            } elseif ( class_exists( 'TRP_Translate_Press' ) && method_exists( 'TRP_Translate_Press', 'get_settings' ) ) {
-                // Best-effort: try reading stored languages from plugin settings.
-                $trp = TRP_Translate_Press::get_instance();
-
-                if ( method_exists( $trp, 'get_languages' ) ) {
-                    $trp_langs = $trp->get_languages();
-
-                    if ( is_array( $trp_langs ) ) {
-                        foreach ( $trp_langs as $code => $meta ) {
-                            $lang_url = rtrim( get_home_url( $blog_id ), '/' ) . '/' . ltrim( $code, '/' );
-
-                            if ( $lang_url && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                                self::clear_page_cache_by_url( $lang_url, $lang_args );
-                                $cleared_urls[] = $lang_url;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Weglot detection: try known helper functions or constants.
-            if ( defined( 'WEGLOT_VERSION' ) || function_exists( 'weglot_get_current_language' ) || class_exists( 'Weglot' ) ) {
-                if ( function_exists( 'weglot_get_languages' ) ) {
-                    $weglot_langs = weglot_get_languages();
-
-                    if ( is_array( $weglot_langs ) ) {
-                        foreach ( $weglot_langs as $code ) {
-                            $lang_url = rtrim( add_query_arg( 'lang', $code, get_home_url( $blog_id ) ), '/' );
-
-                            if ( $lang_url && ! in_array( $lang_url, $cleared_urls, true ) ) {
-                                self::clear_page_cache_by_url( $lang_url, $lang_args );
-                                $cleared_urls[] = $lang_url;
-                            }
-                        }
-                    }
-                } else {
-                    // Fallback: common Weglot behavior is prefixing path with language code.
-                    if ( function_exists( 'weglot_get_current_language' ) ) {
-                        $current = weglot_get_current_language();
-
-                        // Cannot enumerate languages reliably — skip fallback enumeration.
-                    }
-                }
-            }
-        }
-
-        // Additional custom language URLs or codes provided in settings.
-        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
-            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
-
-            foreach ( $lines as $line ) {
-                $line = trim( $line );
-
-                if ( $line === '' ) {
-                    continue;
-                }
-
-                $lang_url = '';
-
-                if ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
-                    $parts = explode( ':', $line, 2 );
-                    $code  = trim( $parts[1] );
-
-                    if ( $code !== '' ) {
-                        $lang_url = rtrim( add_query_arg( 'lang', $code, get_home_url( $blog_id ) ), '/' );
-                    }
-                } elseif ( preg_match( '#^https?://#i', $line ) ) {
-                    $lang_url = rtrim( $line, '/' );
-                } elseif ( strpos( $line, '/' ) === 0 ) {
-                    $lang_url = rtrim( get_home_url( $blog_id ), '/' ) . rtrim( $line, '/' );
-                } else {
-                    // Treat as a language code using the "lang" query var by default.
-                    $lang_url = rtrim( add_query_arg( 'lang', $line, get_home_url( $blog_id ) ), '/' );
-                }
-
-                if ( $lang_url && ! in_array( $lang_url, $cleared_urls, true ) ) {
+            foreach ( self::get_language_home_urls( $blog_id ) as $lang_url ) {
+                if ( $lang_url !== $site_home && ! in_array( $lang_url, $cleared_urls, true ) ) {
                     self::clear_page_cache_by_url( $lang_url, $lang_args );
                     $cleared_urls[] = $lang_url;
                 }
             }
+
+            if ( ! in_array( $site_home, $cleared_urls, true ) ) {
+                self::clear_page_cache_by_url( $site_home, $lang_args );
+                $cleared_urls[] = $site_home;
+            }
+        }
+    }
+
+    /**
+     * Get all known language URLs and labels for a site.
+     *
+     * @param int|null $blog_id Optional blog ID to use when building URLs. Default null (current site).
+     * @return array<string, string> Map of language URL to display label.
+     */
+    private static function get_language_items( $blog_id = null ) {
+        $language_items = array();
+        $blog_id = ( $blog_id !== null ) ? (int) $blog_id : null;
+        $home_url = $blog_id ? rtrim( get_home_url( $blog_id ), '/' ) : rtrim( get_home_url(), '/' );
+        $add_item = static function( $url, $label = '' ) use ( &$language_items ) {
+            $url = rtrim( (string) $url, '/' );
+            if ( $url === '' ) {
+                return;
+            }
+
+            $label = $label !== '' ? (string) $label : $url;
+            if ( ! isset( $language_items[ $url ] ) ) {
+                $language_items[ $url ] = $label;
+            }
+        };
+
+        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
+            $wpml_languages = has_filter( 'wpml_active_languages' ) ? apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) ) : ( function_exists( 'icl_get_languages' ) ? icl_get_languages( 'skip_missing=0' ) : null );
+
+            if ( is_array( $wpml_languages ) ) {
+                foreach ( $wpml_languages as $lang ) {
+                    $url = ! empty( $lang['url'] ) ? $lang['url'] : ( ! empty( $lang['translated_home'] ) ? $lang['translated_home'] : '' );
+                    $label = ! empty( $lang['native_name'] ) ? $lang['native_name'] : ( ! empty( $lang['translated_name'] ) ? $lang['translated_name'] : ( ! empty( $lang['english_name'] ) ? $lang['english_name'] : '' ) );
+                    $code = ! empty( $lang['language_code'] ) ? $lang['language_code'] : ( ! empty( $lang['code'] ) ? $lang['code'] : '' );
+
+                    if ( $url !== '' ) {
+                        $add_item( $url, $label !== '' ? $label : $code );
+                    } elseif ( $code !== '' ) {
+                        $add_item( rtrim( add_query_arg( 'lang', $code, $home_url ), '/' ), $label !== '' ? $label : $code );
+                    }
+                }
+            }
         }
 
-        // Always clear the primary site home URL (avoid duplicate clears).
-        $primary_home = rtrim( get_home_url( $blog_id ), '/' );
-        if ( ! in_array( $primary_home, $cleared_urls, true ) ) {
-            self::clear_page_cache_by_url( $primary_home, $lang_args );
-            $cleared_urls[] = $primary_home;
+        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
+            foreach ( (array) pll_languages_list() as $pll_lang ) {
+                $url = pll_home_url( $pll_lang );
+                if ( $url ) {
+                    $add_item( $url, $pll_lang );
+                }
+            }
         }
+
+        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
+            foreach ( (array) qtranxf_getSortedLanguages() as $v ) {
+                $code = is_string( $v ) ? $v : ( is_array( $v ) && ! empty( $v['code'] ) ? $v['code'] : '' );
+                if ( $code !== '' ) {
+                    $add_item( rtrim( get_home_url( $blog_id ), '/' ) . '/' . ltrim( $code, '/' ), $code );
+                    $add_item( rtrim( add_query_arg( 'lang', $code, $home_url ), '/' ), $code );
+                }
+            }
+        }
+
+        if ( function_exists( 'trp_get_available_languages' ) ) {
+            foreach ( (array) trp_get_available_languages() as $trp_lang ) {
+                $code = is_array( $trp_lang ) && ! empty( $trp_lang['slug'] ) ? $trp_lang['slug'] : ( is_string( $trp_lang ) ? $trp_lang : '' );
+                if ( $code === '' ) {
+                    continue;
+                }
+
+                $url = function_exists( 'trp_get_home_url' ) ? trp_get_home_url( $code ) : rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
+                $add_item( $url, $code );
+            }
+        } elseif ( class_exists( 'TRP_Translate_Press' ) && method_exists( 'TRP_Translate_Press', 'get_settings' ) ) {
+            $trp = TRP_Translate_Press::get_instance();
+            if ( method_exists( $trp, 'get_languages' ) ) {
+                foreach ( (array) $trp->get_languages() as $code => $meta ) {
+                    $add_item( rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' ), (string) $code );
+                }
+            }
+        }
+
+        if ( defined( 'WEGLOT_VERSION' ) || function_exists( 'weglot_get_current_language' ) || class_exists( 'Weglot' ) ) {
+            if ( function_exists( 'weglot_get_languages' ) ) {
+                foreach ( (array) weglot_get_languages() as $code ) {
+                    $add_item( rtrim( add_query_arg( 'lang', $code, $home_url ), '/' ), (string) $code );
+                }
+            }
+        }
+
+        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
+            foreach ( preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] ) as $line ) {
+                $line = trim( (string) $line );
+                if ( $line === '' ) {
+                    continue;
+                }
+
+                if ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
+                    $parts = explode( ':', $line, 2 );
+                    $code  = trim( $parts[1] );
+                    if ( $code !== '' ) {
+                        $add_item( rtrim( add_query_arg( 'lang', $code, $home_url ), '/' ), $code );
+                    }
+                    continue;
+                }
+
+                if ( preg_match( '#^https?://#i', $line ) ) {
+                    $add_item( rtrim( $line, '/' ), $line );
+                } elseif ( strpos( $line, '/' ) === 0 ) {
+                    $add_item( rtrim( $home_url, '/' ) . rtrim( $line, '/' ), $line );
+                } else {
+                    $add_item( rtrim( add_query_arg( 'lang', $line, $home_url ), '/' ), $line );
+                }
+            }
+        }
+
+        return $language_items;
     }
 
     /**
@@ -2642,189 +2487,132 @@ final class Cache_Enabler {
      * @return string[] Array of language home URLs (without trailing slash).
      */
     private static function get_language_home_urls( $blog_id = null ) {
-        $urls = array();
-        $blog_id = ( $blog_id !== null ) ? (int) $blog_id : null;
+        return array_keys( self::get_language_items( $blog_id ) );
+    }
 
-        $home_url = $blog_id ? rtrim( get_home_url( $blog_id ), '/' ) : rtrim( get_home_url(), '/' );
+    /**
+     * Get the current page/post ID when available.
+     *
+     * @return int Current post/page ID or 0.
+     */
+    private static function get_current_page_post_id() {
+        if ( is_singular() ) {
+            return (int) get_queried_object_id();
+        }
 
-        // Attempt to detect languages regardless of the 'clear_language_caches' setting so
-        // 'Clear All Languages' in single-site multilingual setups still enumerates language domains.
+        if ( is_home() || is_front_page() ) {
+            return 0;
+        }
 
-        // WPML
-        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
-            $wpml_languages = null;
+        if ( function_exists( 'url_to_postid' ) ) {
+            $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false ) : '';
+            $request_url = home_url( $request_uri );
+            return (int) url_to_postid( $request_url );
+        }
 
-            if ( has_filter( 'wpml_active_languages' ) ) {
-                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
-            } elseif ( function_exists( 'icl_get_languages' ) ) {
-                $wpml_languages = icl_get_languages( 'skip_missing=0' );
-            }
+        return 0;
+    }
 
-            if ( is_array( $wpml_languages ) ) {
-                foreach ( $wpml_languages as $lang ) {
-                    $lang_url = '';
+    /**
+    * Resolve all translated post IDs for a given post.
+    *
+    * @param int $post_id Source post ID.
+    * @return int[] Unique translated post IDs.
+    */
+    private static function get_post_translation_ids( $post_id ) {
+       $post_id = (int) $post_id;
+       $ids = array();
 
-                    if ( ! empty( $lang['url'] ) ) {
-                        $lang_url = rtrim( $lang['url'], '/' );
-                    } elseif ( ! empty( $lang['translated_home'] ) ) {
-                        $lang_url = rtrim( $lang['translated_home'], '/' );
-                    } elseif ( ! empty( $lang['code'] ) ) {
-                        $lang_url = rtrim( add_query_arg( 'lang', $lang['code'], $home_url ), '/' );
-                    }
+       if ( ! $post_id ) {
+           return $ids;
+       }
 
-                    if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
-                        $urls[] = $lang_url;
-                    }
-                }
+       $post_type = get_post_type( $post_id );
+
+       if ( function_exists( 'pll_get_post_translations' ) ) {
+           $translations = pll_get_post_translations( $post_id );
+           if ( is_array( $translations ) ) {
+               foreach ( $translations as $translated_id ) {
+                   $translated_id = (int) $translated_id;
+                   if ( $translated_id && ! in_array( $translated_id, $ids, true ) ) {
+                       $ids[] = $translated_id;
+                   }
+               }
+           }
+       }
+
+       if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
+           $wpml_languages = null;
+
+           if ( has_filter( 'wpml_active_languages' ) ) {
+               $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
+           } elseif ( function_exists( 'icl_get_languages' ) ) {
+               $wpml_languages = icl_get_languages( 'skip_missing=0' );
+           }
+
+           if ( is_array( $wpml_languages ) ) {
+               foreach ( $wpml_languages as $lang ) {
+                   $code = ! empty( $lang['language_code'] ) ? $lang['language_code'] : ( ! empty( $lang['code'] ) ? $lang['code'] : '' );
+                   if ( ! $code ) {
+                       continue;
+                   }
+
+                   $translated_id = apply_filters( 'wpml_object_id', $post_id, $post_type, false, $code );
+                   $translated_id = (int) $translated_id;
+
+                   if ( $translated_id && $translated_id !== $post_id && ! in_array( $translated_id, $ids, true ) ) {
+                       $ids[] = $translated_id;
+                   }
+               }
+           }
+       }
+
+       // Always include the source post ID so callers receive at least the original post.
+       $ids[] = $post_id;
+
+       return array_values( array_unique( $ids ) );
+    }
+
+    /**
+    * Resolve the translated post ID for a given page and language code.
+     *
+     * @param int    $post_id   Source post ID.
+     * @param string $lang_code Language code, e.g. 'fr'.
+     * @return int Translated post ID or 0.
+     */
+    private static function get_translated_page_id_for_language( $post_id, $lang_code ) {
+        $post_id = (int) $post_id;
+        $lang_code = (string) $lang_code;
+
+        if ( ! $post_id || $lang_code === '' ) {
+            return 0;
+        }
+
+        $post_type = get_post_type( $post_id );
+
+        if ( has_filter( 'wpml_object_id' ) || function_exists( 'icl_object_id' ) ) {
+            $translated_id = apply_filters( 'wpml_object_id', $post_id, $post_type, false, $lang_code );
+            if ( $translated_id ) {
+                return (int) $translated_id;
             }
         }
 
-        // Polylang
-        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
-            $polylang_langs = pll_languages_list();
-
-            if ( is_array( $polylang_langs ) ) {
-                foreach ( $polylang_langs as $pll_lang ) {
-                    $lang_url = pll_home_url( $pll_lang );
-
-                    if ( ! empty( $lang_url ) ) {
-                        $lang_url = rtrim( $lang_url, '/' );
-                        if ( ! in_array( $lang_url, $urls, true ) ) {
-                            $urls[] = $lang_url;
-                        }
-                    }
-                }
+        if ( function_exists( 'pll_get_post' ) ) {
+            $translated_id = pll_get_post( $post_id, $lang_code );
+            if ( $translated_id ) {
+                return (int) $translated_id;
             }
         }
 
-        // qTranslate-X (qtranxf)
-        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
-            $qlangs = qtranxf_getSortedLanguages();
-
-            if ( is_array( $qlangs ) ) {
-                foreach ( $qlangs as $k => $v ) {
-                    $code = '';
-
-                    if ( is_string( $v ) ) {
-                        $code = $v;
-                    } elseif ( is_array( $v ) && ! empty( $v['code'] ) ) {
-                        $code = $v['code'];
-                    }
-
-                    if ( $code ) {
-                        $c1 = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
-                        $c2 = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
-
-                        if ( ! in_array( $c1, $urls, true ) ) {
-                            $urls[] = $c1;
-                        }
-
-                        if ( ! in_array( $c2, $urls, true ) ) {
-                            $urls[] = $c2;
-                        }
-                    }
-                }
+        // TranslatePress / Weglot / custom plugins: best effort if they expose a translation API.
+        if ( function_exists( 'trp_get_translation' ) ) {
+            $translated_id = trp_get_translation( $post_id, $lang_code );
+            if ( $translated_id ) {
+                return (int) $translated_id;
             }
         }
 
-        // TranslatePress
-        if ( function_exists( 'trp_get_available_languages' ) ) {
-            $trp_langs = trp_get_available_languages();
-
-            if ( is_array( $trp_langs ) ) {
-                foreach ( $trp_langs as $trp_lang ) {
-                    if ( is_array( $trp_lang ) && ! empty( $trp_lang['slug'] ) ) {
-                        $code = $trp_lang['slug'];
-                    } elseif ( is_string( $trp_lang ) ) {
-                        $code = $trp_lang;
-                    } else {
-                        $code = '';
-                    }
-
-                    if ( $code ) {
-                        if ( function_exists( 'trp_get_home_url' ) ) {
-                            $lang_url = rtrim( trp_get_home_url( $code ), '/' );
-                        } else {
-                            $lang_url = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
-                        }
-
-                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
-                            $urls[] = $lang_url;
-                        }
-                    }
-                }
-            }
-        } elseif ( class_exists( 'TRP_Translate_Press' ) && method_exists( 'TRP_Translate_Press', 'get_settings' ) ) {
-            $trp = TRP_Translate_Press::get_instance();
-
-            if ( method_exists( $trp, 'get_languages' ) ) {
-                $trp_langs = $trp->get_languages();
-
-                if ( is_array( $trp_langs ) ) {
-                    foreach ( $trp_langs as $code => $meta ) {
-                        $lang_url = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
-
-                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
-                            $urls[] = $lang_url;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Weglot
-        if ( defined( 'WEGLOT_VERSION' ) || function_exists( 'weglot_get_current_language' ) || class_exists( 'Weglot' ) ) {
-            if ( function_exists( 'weglot_get_languages' ) ) {
-                $weglot_langs = weglot_get_languages();
-
-                if ( is_array( $weglot_langs ) ) {
-                    foreach ( $weglot_langs as $code ) {
-                        $lang_url = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
-
-                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
-                            $urls[] = $lang_url;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Additional custom language URLs or codes provided in settings.
-        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
-            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
-
-            foreach ( $lines as $line ) {
-                $line = trim( $line );
-
-                if ( $line === '' ) {
-                    continue;
-                }
-
-                $lang_url = '';
-
-                if ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
-                    $parts = explode( ':', $line, 2 );
-                    $code  = trim( $parts[1] );
-
-                    if ( $code !== '' ) {
-                        $lang_url = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
-                    }
-                } elseif ( preg_match( '#^https?://#i', $line ) ) {
-                    $lang_url = rtrim( $line, '/' );
-                } elseif ( strpos( $line, '/' ) === 0 ) {
-                    $lang_url = rtrim( $home_url, '/' ) . rtrim( $line, '/' );
-                } else {
-                    // Treat as a language code using the "lang" query var by default.
-                    $lang_url = rtrim( add_query_arg( 'lang', $line, $home_url ), '/' );
-                }
-
-                if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
-                    $urls[] = $lang_url;
-                }
-            }
-        }
-
-        return $urls;
+        return 0;
     }
 
     /**
@@ -2950,8 +2738,9 @@ final class Cache_Enabler {
 
                 if ( preg_match( '#^https?://#i', $line ) ) {
                     if ( rtrim( $line, '/' ) === $home_url ) {
-                        // No code known here — return host as code fallback
-                        return $home_url;
+                        // No code known here — cannot determine a language code for this URL.
+                        // Return false to keep the function's return type consistent (string|false).
+                        return false;
                     }
                 } elseif ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
                     $parts = explode( ':', $line, 2 );
