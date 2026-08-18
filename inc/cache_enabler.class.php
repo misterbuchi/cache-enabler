@@ -2777,18 +2777,27 @@ final class Cache_Enabler {
      * @return int Current post/page ID or 0.
      */
     private static function get_current_page_post_id() {
+        // Prefer the queried object when on a singular view.
         if ( is_singular() ) {
             return (int) get_queried_object_id();
         }
 
-        if ( is_home() || is_front_page() ) {
-            return 0;
-        }
-
+        // Try resolving by URL (works for pretty and non-pretty setups, and for many front-page configurations).
         if ( function_exists( 'url_to_postid' ) ) {
             $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false ) : '';
             $request_url = home_url( $request_uri );
-            return (int) url_to_postid( $request_url );
+            $resolved = (int) url_to_postid( $request_url );
+            if ( $resolved ) {
+                return $resolved;
+            }
+        }
+
+        // If the site uses a static front page, return that page's ID as a fallback so front page actions are available.
+        if ( is_front_page() ) {
+            $front_id = get_option( 'page_on_front' );
+            if ( $front_id ) {
+                return (int) $front_id;
+            }
         }
 
         return 0;
