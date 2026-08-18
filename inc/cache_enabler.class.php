@@ -595,11 +595,12 @@ final class Cache_Enabler {
      * @param   bool    $restart_engine   (Optional) Whether to restart the cache engine. Default false.
      * @return  array                     An array of callback returns with blog IDs as the keys.
      */
-    private static function each_site( $sites, $callback, $callback_params = array(), $restart_engine = false ) {
+    private static function each_site( $sites, $callback, $callback_params = array(), $restart_engine = false, $force = false ) {
 
         $blog_ids          = $sites ? self::get_blog_ids() : array( get_current_blog_id() );
         $last_blog_id      = end( $blog_ids );
-        $skip_active_check = ! self::is_cache_enabler_active();
+        // When $force is true, skip checking whether Cache Enabler is active on each site and run the callback for all sites.
+        $skip_active_check = $force || ! self::is_cache_enabler_active();
         $callback_return   = array();
 
         foreach ( $blog_ids as $blog_id ) {
@@ -1232,19 +1233,181 @@ final class Cache_Enabler {
 
         $title = ( is_multisite() && is_network_admin() ) ? esc_html__( 'Clear Network Cache', 'cache-enabler' ) : esc_html__( 'Clear Site Cache', 'cache-enabler' );
 
+        // Parent menu (no direct href) to host a submenu for language choices.
         $wp_admin_bar->add_menu(
             array(
                 'id'     => 'cache_enabler_clear_cache',
-                'href'   => wp_nonce_url( add_query_arg( array(
-                                '_cache'  => 'cache-enabler',
-                                '_action' => 'clear',
-                            ) ), 'cache_enabler_clear_cache_nonce' ),
+                'href'   => '#',
                 'parent' => 'top-secondary',
-                'title'  => '<span class="ab-item">' . $title . '</span>',
+                'title'  => '<span class="ab-item">' . $title . ' <span class="ab-icon"></span></span>',
                 'meta'   => array( 'title' => $title ),
             )
         );
 
+        // Child: clear all (existing behavior)
+        $wp_admin_bar->add_menu(
+            array(
+                'id'     => 'cache_enabler_clear_cache_all',
+                'href'   => wp_nonce_url( add_query_arg( array(
+                                '_cache'  => 'cache-enabler',
+                                '_action' => 'clear',
+                            ) ), 'cache_enabler_clear_cache_nonce' ),
+                'parent' => 'cache_enabler_clear_cache',
+                'title'  => esc_html__( 'Clear All Languages', 'cache-enabler' ),
+                'meta'   => array( 'title' => esc_html__( 'Clear All Languages', 'cache-enabler' ) ),
+            )
+        );
+
+        // Try to detect available languages from known multilingual plugins to build per-language submenu.
+        $language_items = array();
+        $site_home = rtrim( get_home_url(), '/' );
+
+        // WPML
+        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
+            $wpml_languages = null;
+
+            if ( has_filter( 'wpml_active_languages' ) ) {
+                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
+            } elseif ( function_exists( 'icl_get_languages' ) ) {
+                $wpml_languages = icl_get_languages( 'skip_missing=0' );
+            }
+
+            if ( is_array( $wpml_languages ) ) {
+                foreach ( $wpml_languages as $lang ) {
+                    $url = '';
+                    $label = '';
+                    $code = '';
+
+                    if ( ! empty( $lang['url'] ) ) {
+                        $url = rtrim( $lang['url'], '/' );
+                    } elseif ( ! empty( $lang['translated_home'] ) ) {
+                        $url = rtrim( $lang['translated_home'], '/' );
+                    }
+
+                    if ( ! empty( $lang['native_name'] ) ) {
+                        $label = $lang['native_name'];
+                    } elseif ( ! empty( $lang['translated_name'] ) ) {
+                        $label = $lang['translated_name'];
+                    } elseif ( ! empty( $lang['english_name'] ) ) {
+                        $label = $lang['english_name'];
+                    }
+
+                    if ( ! empty( $lang['language_code'] ) ) {
+                        $code = $lang['language_code'];
+                    } elseif ( ! empty( $lang['code'] ) ) {
+                        $code = $lang['code'];
+                    }
+
+                    if ( $url ) {
+                        $language_items[ $url ] = $label ? $label : $url;
+                    } elseif ( $code ) {
+                        $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $label ? $label : $code;
+                    }
+                }
+            }
+        }
+
+        // Polylang
+        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
+            $polylang_langs = pll_languages_list();
+
+            if ( is_array( $polylang_langs ) ) {
+                foreach ( $polylang_langs as $pll_lang ) {
+                    $url = pll_home_url( $pll_lang );
+                    $label = $pll_lang;
+
+                    if ( $url ) {
+                        $language_items[ rtrim( $url, '/' ) ] = $label;
+                    }
+                }
+            }
+        }
+
+        // qTranslate-X
+        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
+            $qlangs = qtranxf_getSortedLanguages();
+
+            if ( is_array( $qlangs ) ) {
+                foreach ( $qlangs as $k => $v ) {
+                    $code = is_string( $v ) ? $v : ( is_array( $v ) && ! empty( $v['code'] ) ? $v['code'] : '' );
+
+                    if ( $code ) {
+                        $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $code;
+                    }
+                }
+            }
+        }
+
+        // TranslatePress
+        if ( function_exists( 'trp_get_available_languages' ) ) {
+            $trp = trp_get_available_languages();
+
+            if ( is_array( $trp ) ) {
+                foreach ( $trp as $t ) {
+                    $code = is_array( $t ) && ! empty( $t['slug'] ) ? $t['slug'] : ( is_string( $t ) ? $t : '' );
+
+                    if ( $code ) {
+                        $language_items[ rtrim( get_home_url() . '/' . ltrim( $code, '/' ), '/' ) ] = $code;
+                    }
+                }
+            }
+        }
+
+        // Weglot (best-effort)
+        if ( function_exists( 'weglot_get_languages' ) ) {
+            $weglot_langs = weglot_get_languages();
+
+            if ( is_array( $weglot_langs ) ) {
+                foreach ( $weglot_langs as $code ) {
+                    $language_items[ rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' ) ] = $code;
+                }
+            }
+        }
+
+        // Additional custom language URLs from settings
+        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
+            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
+
+            foreach ( $lines as $line ) {
+                $line = trim( $line );
+
+                if ( $line === '' ) {
+                    continue;
+                }
+
+                if ( preg_match( '#^https?://#i', $line ) ) {
+                    $language_items[ rtrim( $line, '/' ) ] = $line;
+                } elseif ( strpos( $line, '/' ) === 0 ) {
+                    $language_items[ rtrim( get_home_url() . $line, '/' ) ] = $line;
+                } else {
+                    $language_items[ rtrim( add_query_arg( 'lang', $line, get_home_url() ), '/' ) ] = $line;
+                }
+            }
+        }
+
+        // Add language submenu items
+        foreach ( $language_items as $lang_url => $label ) {
+            // Avoid adding the primary site home twice
+            if ( rtrim( $lang_url, '/' ) === $site_home ) {
+                continue;
+            }
+
+            $wp_admin_bar->add_menu(
+                array(
+                    'id'     => 'cache_enabler_clear_lang_' . md5( $lang_url ),
+                    'href'   => wp_nonce_url( add_query_arg( array(
+                                    '_cache'    => 'cache-enabler',
+                                    '_action'   => 'clearlang',
+                                    'lang_url'  => rawurlencode( $lang_url ),
+                                ) ), 'cache_enabler_clear_cache_nonce' ),
+                    'parent' => 'cache_enabler_clear_cache',
+                    'title'  => esc_html( $label ),
+                    'meta'   => array( 'title' => esc_html( $label ) ),
+                )
+            );
+        }
+
+        // Page-level clear still for front-end
         if ( ! is_admin() ) {
             $wp_admin_bar->add_menu(
                 array(
@@ -1258,6 +1421,30 @@ final class Cache_Enabler {
                     'meta'   => array( 'title' => esc_html__( 'Clear Page Cache', 'cache-enabler' ) ),
                 )
             );
+
+            // If language items were detected, add per-language "Clear Page Cache for this page" submenu entries.
+            if ( ! empty( $language_items ) && is_array( $language_items ) ) {
+                // Current request path (including query) sanitized similar to clearurl handling.
+                $request_path = Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false );
+
+                foreach ( $language_items as $lang_url => $label ) {
+                    // Build a nonce'd URL to trigger a per-language page clear.
+                    $wp_admin_bar->add_menu(
+                        array(
+                            'id'     => 'cache_enabler_clear_page_cache_lang_' . md5( $lang_url ),
+                            'href'   => wp_nonce_url( add_query_arg( array(
+                                            '_cache'   => 'cache-enabler',
+                                            '_action'  => 'clearlangurl',
+                                            'lang_url' => rawurlencode( rtrim( $lang_url, '/' ) ),
+                                            'page'     => rawurlencode( $request_path ),
+                                        ) ), 'cache_enabler_clear_cache_nonce' ),
+                            'parent' => 'cache_enabler_clear_page_cache',
+                            'title'  => esc_html__( 'For', 'cache-enabler' ) . ' ' . esc_html( $label ),
+                            'meta'   => array( 'title' => esc_html( $label ) ),
+                        )
+                    );
+                }
+            }
         }
     }
 
@@ -1331,7 +1518,7 @@ final class Cache_Enabler {
      */
     public static function process_clear_cache_request() {
 
-        if ( empty( $_GET['_cache'] ) || empty( $_GET['_action'] ) || $_GET['_cache'] !== 'cache-enabler' || ( $_GET['_action'] !== 'clear' && $_GET['_action'] !== 'clearurl' ) ) {
+        if ( empty( $_GET['_cache'] ) || empty( $_GET['_action'] ) || $_GET['_cache'] !== 'cache-enabler' || ( $_GET['_action'] !== 'clear' && $_GET['_action'] !== 'clearurl' && $_GET['_action'] !== 'clearlang' && $_GET['_action'] !== 'clearlangurl' ) ) {
             return;
         }
 
@@ -1346,7 +1533,172 @@ final class Cache_Enabler {
         if ( $_GET['_action'] === 'clearurl' ) {
             self::clear_page_cache_by_url( Cache_Enabler_Engine::$request_headers['Host'] . Cache_Enabler_Engine::sanitize_server_input($_SERVER['REQUEST_URI'], false) );
         } elseif ( $_GET['_action'] === 'clear' ) {
-            self::each_site( ( is_multisite() && is_network_admin() ), self::class . '::clear_site_cache', array(), true );
+            // Multisite: keep existing behaviour (force clear across network). Single-site: enumerate detected language home URLs
+            // and clear each host/domain explicitly. This covers multilingual setups where each language uses its own domain.
+            if ( is_multisite() ) {
+                // Force running the clear on all blogs in the network (ignore per-site plugin activation) so "Clear All Languages" truly clears each site's cache.
+                self::each_site( is_multisite(), self::class . '::clear_site_cache', array(), true, true );
+            } else {
+                $cleared_urls = array();
+
+                // Gather language home URLs detected by known multilingual plugins or additional settings.
+                $lang_urls = self::get_language_home_urls();
+
+                // Store detected language URLs for debug/visibility in admin notice.
+                if ( is_array( $lang_urls ) ) {
+                    set_transient( 'cache_enabler_detected_lang_urls_' . get_current_user_id(), $lang_urls, MINUTE_IN_SECONDS );
+                } else {
+                    set_transient( 'cache_enabler_detected_lang_urls_' . get_current_user_id(), array(), MINUTE_IN_SECONDS );
+                }
+
+                if ( is_array( $lang_urls ) ) {
+                    foreach ( $lang_urls as $lu ) {
+                        if ( $lu && filter_var( $lu, FILTER_VALIDATE_URL ) && ! in_array( $lu, $cleared_urls, true ) ) {
+                            self::clear_page_cache_by_url( $lu, array( 'subpages' => 1 ) );
+                            $cleared_urls[] = $lu;
+                        }
+                    }
+                }
+
+                // Always clear the primary home URL as well.
+                $primary_home = rtrim( get_home_url(), '/' );
+                if ( ! in_array( $primary_home, $cleared_urls, true ) ) {
+                    self::clear_page_cache_by_url( $primary_home, array( 'subpages' => 1 ) );
+                    $cleared_urls[] = $primary_home;
+                }
+
+                if ( ! empty( $cleared_urls ) ) {
+                    set_transient( 'cache_enabler_cleared_urls_' . get_current_user_id(), $cleared_urls, MINUTE_IN_SECONDS );
+                } else {
+                    // Still store an empty cleared URLs list so admin can see detected values even when nothing cleared.
+                    set_transient( 'cache_enabler_cleared_urls_' . get_current_user_id(), $cleared_urls, MINUTE_IN_SECONDS );
+                }
+            }
+        } elseif ( $_GET['_action'] === 'clearlang' ) {
+            // Clear cache for a specific language URL passed via lang_url (urlencoded).
+            $cleared_urls = array();
+
+            if ( ! empty( $_GET['lang_url'] ) ) {
+                $lang_url = urldecode( wp_unslash( $_GET['lang_url'] ) );
+
+                // Normalize and ensure it's a URL or path under home.
+                if ( ! preg_match( '#^https?://#i', $lang_url ) ) {
+                    // If it's a path (starts with /) or a query-style, prepend home URL.
+                    if ( strpos( $lang_url, '/' ) === 0 ) {
+                        $lang_url = rtrim( get_home_url(), '/' ) . $lang_url;
+                    } else {
+                        // Maybe already encoded query (lang=...) — attempt to build URL.
+                        $lang_url = rtrim( get_home_url(), '/' ) . '/' . ltrim( $lang_url, '/' );
+                    }
+                }
+
+                if ( filter_var( $lang_url, FILTER_VALIDATE_URL ) ) {
+                    $parsed = parse_url( $lang_url );
+                    $host = isset( $parsed['host'] ) ? $parsed['host'] : '';
+                    $path = isset( $parsed['path'] ) ? $parsed['path'] : '/';
+
+                    // Try to resolve a blog ID for multisite domain/path mappings.
+                    if ( $host !== '' && is_multisite() ) {
+                        $blog_id = self::resolve_blog_id_from_url( $host, $path );
+
+                        if ( $blog_id && $blog_id !== 0 ) {
+                            // Use existing clear_site_cache logic which handles per-site clearing.
+                            self::clear_page_cache_by_site( (int) $blog_id, array( 'subpages' => 1 ) );
+                            $cleared_urls[] = $lang_url;
+                        } else {
+                            // No matching blog; fall back to clearing by URL (full purge of subpages).
+                            self::clear_page_cache_by_url( $lang_url, array( 'subpages' => 1 ) );
+                            $cleared_urls[] = $lang_url;
+                        }
+                    } else {
+                        // Single-site or no multisite; clear by URL.
+                        self::clear_page_cache_by_url( $lang_url, array( 'subpages' => 1 ) );
+                        $cleared_urls[] = $lang_url;
+                    }
+                }
+            }
+
+            if ( ! empty( $cleared_urls ) ) {
+                // Store cleared URLs for the admin notice for the current user.
+                set_transient( 'cache_enabler_cleared_urls_' . get_current_user_id(), $cleared_urls, MINUTE_IN_SECONDS );
+            }
+        } elseif ( $_GET['_action'] === 'clearlangurl' ) {
+            // Clear cache for current page on a specific language host. Expected params: lang_url (urlencoded) and page (urlencoded request path).
+            $cleared_urls = array();
+
+            if ( ! empty( $_GET['lang_url'] ) ) {
+                $lang_url = urldecode( wp_unslash( $_GET['lang_url'] ) );
+
+                // Normalize lang_url similar to clearlang handling.
+                if ( ! preg_match( '#^https?://#i', $lang_url ) ) {
+                    if ( strpos( $lang_url, '/' ) === 0 ) {
+                        $lang_url = rtrim( get_home_url(), '/' ) . $lang_url;
+                    } else {
+                        $lang_url = rtrim( get_home_url(), '/' ) . '/' . ltrim( $lang_url, '/' );
+                    }
+                }
+
+                // Page path (including query) - falls back to current request if not provided.
+                $page_path = '/';
+                if ( ! empty( $_GET['page'] ) ) {
+                    $page_path = urldecode( wp_unslash( $_GET['page'] ) );
+                } else {
+                    $page_path = Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false );
+                }
+
+                if ( filter_var( $lang_url, FILTER_VALIDATE_URL ) ) {
+                    // Try to detect a translated post permalink for the current page when possible.
+                    $target = '';
+
+                    // Build absolute current URL to resolve a post ID if possible.
+                    $current_home = rtrim( get_home_url(), '/' );
+                    $current_full = $current_home . ( strpos( $page_path, '/' ) === 0 ? $page_path : '/' . ltrim( $page_path, '/' ) );
+
+                    $post_id = 0;
+                    // url_to_postid expects a full URL.
+                    if ( function_exists( 'url_to_postid' ) ) {
+                        $post_id = url_to_postid( $current_full );
+                    }
+
+                    // Try to find language code for this lang host.
+                    $lang_code = self::get_language_code_for_home_url( $lang_url );
+
+                    if ( $post_id && $lang_code ) {
+                        // WPML: try apply_filters('wpml_object_id', ...)
+                        $translated_id = false;
+
+                        if ( has_filter( 'wpml_object_id' ) || function_exists( 'icl_object_id' ) ) {
+                            $translated_id = apply_filters( 'wpml_object_id', $post_id, get_post_type( $post_id ), false, $lang_code );
+                        }
+
+                        // Polylang
+                        if ( ! $translated_id && function_exists( 'pll_get_post' ) ) {
+                            $translated_id = pll_get_post( $post_id, $lang_code );
+                        }
+
+                        if ( $translated_id ) {
+                            $permalink = get_permalink( $translated_id );
+                            if ( $permalink ) {
+                                $target = rtrim( $permalink, '/' );
+                            }
+                        }
+                    }
+
+                    // Fallback: combine lang home and request path.
+                    if ( $target === '' ) {
+                        $target = rtrim( $lang_url, '/' ) . '/' . ltrim( $page_path, '/' );
+                        $target = preg_replace( '#([^:])/+#', '$1/', $target );
+                    }
+
+                    // Clear this specific page cache (no subpages) on the target host.
+                    self::clear_page_cache_by_url( $target );
+                    $cleared_urls[] = $target;
+                }
+            }
+
+            if ( ! empty( $cleared_urls ) ) {
+                set_transient( 'cache_enabler_cleared_urls_' . get_current_user_id(), $cleared_urls, MINUTE_IN_SECONDS );
+            }
         }
 
         // Redirect to the same page.
@@ -1357,6 +1709,51 @@ final class Cache_Enabler {
         }
 
         exit;
+    }
+
+    /**
+     * Resolve a multisite blog ID for a given host and path.
+     *
+     * Tries get_blog_id_from_url() first (if available), then falls back to iterating get_sites()
+     * to support domain-mapped multisite setups.
+     *
+     * @param string $host Hostname to match.
+     * @param string $path Path to match.
+     * @return int|false Blog ID if found, otherwise false.
+     */
+    private static function resolve_blog_id_from_url( $host, $path ) {
+        $host = strtolower( (string) $host );
+        $path = '/' . ltrim( (string) $path, '/' );
+
+        if ( function_exists( 'get_blog_id_from_url' ) ) {
+            $bid = get_blog_id_from_url( $host, $path );
+            if ( $bid && $bid !== 0 ) {
+                return (int) $bid;
+            }
+        }
+
+        if ( is_multisite() && function_exists( 'get_sites' ) ) {
+            $sites = get_sites();
+            foreach ( $sites as $site ) {
+                $site_domain = isset( $site->domain ) ? strtolower( $site->domain ) : '';
+                $site_path   = isset( $site->path ) ? '/' . ltrim( $site->path, '/' ) : '/';
+                // Normalize domain for comparison (ignore leading www.)
+                $cmp_site_domain = preg_replace( '/^www\./', '', $site_domain );
+                $cmp_host = preg_replace( '/^www\./', '', $host );
+
+                if ( $cmp_site_domain === $cmp_host ) {
+                    // If site path is root or lang path matches start of requested path, accept.
+                    if ( $site_path === '/' || strpos( $path, rtrim( $site_path, '/' ) ) === 0 || strpos( $path, $site_path ) === 0 ) {
+                        $site_id = isset( $site->blog_id ) ? $site->blog_id : ( isset( $site->id ) ? $site->id : 0 );
+                        if ( $site_id ) {
+                            return (int) $site_id;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1380,6 +1777,35 @@ final class Cache_Enabler {
             );
 
             delete_transient( self::get_cache_cleared_transient_name() );
+        }
+
+        // Show detected language URLs (debug visibility)
+        $detected_urls_transient = get_transient( 'cache_enabler_detected_lang_urls_' . get_current_user_id() );
+        if ( is_array( $detected_urls_transient ) ) {
+            $detected_items = array_map( 'esc_url', $detected_urls_transient );
+            echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__( 'Detected language home URLs:', 'cache-enabler' ) . '</strong></p><ul>';
+            if ( empty( $detected_items ) ) {
+                echo '<li>' . esc_html__( 'No language URLs detected', 'cache-enabler' ) . '</li>';
+            } else {
+                foreach ( $detected_items as $u ) {
+                    printf( '<li>%s</li>', esc_html( $u ) );
+                }
+            }
+            echo '</ul></div>';
+
+            delete_transient( 'cache_enabler_detected_lang_urls_' . get_current_user_id() );
+        }
+
+        $cleared_urls_transient = get_transient( 'cache_enabler_cleared_urls_' . get_current_user_id() );
+        if ( ! empty( $cleared_urls_transient ) && is_array( $cleared_urls_transient ) ) {
+            $items = array_map( 'esc_url', $cleared_urls_transient );
+            echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__( 'Language cache cleared for:', 'cache-enabler' ) . '</strong></p><ul>';
+            foreach ( $items as $u ) {
+                printf( '<li>%s</li>', esc_html( $u ) );
+            }
+            echo '</ul></div>';
+
+            delete_transient( 'cache_enabler_cleared_urls_' . get_current_user_id() );
         }
     }
 
@@ -2203,6 +2629,348 @@ final class Cache_Enabler {
             self::clear_page_cache_by_url( $primary_home, $lang_args );
             $cleared_urls[] = $primary_home;
         }
+    }
+
+    /**
+     * Get language home URLs detected for the current site (or optional blog_id).
+     *
+     * This mirrors the detection logic used in clear_page_cache_by_site but returns
+     * an array of language home URLs instead of clearing them immediately. Useful for
+     * single-site multilingual setups with different domains per language.
+     *
+     * @param int|null $blog_id Optional blog ID to use when building home URLs. Default null (current site).
+     * @return string[] Array of language home URLs (without trailing slash).
+     */
+    private static function get_language_home_urls( $blog_id = null ) {
+        $urls = array();
+        $blog_id = ( $blog_id !== null ) ? (int) $blog_id : null;
+
+        $home_url = $blog_id ? rtrim( get_home_url( $blog_id ), '/' ) : rtrim( get_home_url(), '/' );
+
+        // Attempt to detect languages regardless of the 'clear_language_caches' setting so
+        // 'Clear All Languages' in single-site multilingual setups still enumerates language domains.
+
+        // WPML
+        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
+            $wpml_languages = null;
+
+            if ( has_filter( 'wpml_active_languages' ) ) {
+                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
+            } elseif ( function_exists( 'icl_get_languages' ) ) {
+                $wpml_languages = icl_get_languages( 'skip_missing=0' );
+            }
+
+            if ( is_array( $wpml_languages ) ) {
+                foreach ( $wpml_languages as $lang ) {
+                    $lang_url = '';
+
+                    if ( ! empty( $lang['url'] ) ) {
+                        $lang_url = rtrim( $lang['url'], '/' );
+                    } elseif ( ! empty( $lang['translated_home'] ) ) {
+                        $lang_url = rtrim( $lang['translated_home'], '/' );
+                    } elseif ( ! empty( $lang['code'] ) ) {
+                        $lang_url = rtrim( add_query_arg( 'lang', $lang['code'], $home_url ), '/' );
+                    }
+
+                    if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
+                        $urls[] = $lang_url;
+                    }
+                }
+            }
+        }
+
+        // Polylang
+        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
+            $polylang_langs = pll_languages_list();
+
+            if ( is_array( $polylang_langs ) ) {
+                foreach ( $polylang_langs as $pll_lang ) {
+                    $lang_url = pll_home_url( $pll_lang );
+
+                    if ( ! empty( $lang_url ) ) {
+                        $lang_url = rtrim( $lang_url, '/' );
+                        if ( ! in_array( $lang_url, $urls, true ) ) {
+                            $urls[] = $lang_url;
+                        }
+                    }
+                }
+            }
+        }
+
+        // qTranslate-X (qtranxf)
+        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
+            $qlangs = qtranxf_getSortedLanguages();
+
+            if ( is_array( $qlangs ) ) {
+                foreach ( $qlangs as $k => $v ) {
+                    $code = '';
+
+                    if ( is_string( $v ) ) {
+                        $code = $v;
+                    } elseif ( is_array( $v ) && ! empty( $v['code'] ) ) {
+                        $code = $v['code'];
+                    }
+
+                    if ( $code ) {
+                        $c1 = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
+                        $c2 = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
+
+                        if ( ! in_array( $c1, $urls, true ) ) {
+                            $urls[] = $c1;
+                        }
+
+                        if ( ! in_array( $c2, $urls, true ) ) {
+                            $urls[] = $c2;
+                        }
+                    }
+                }
+            }
+        }
+
+        // TranslatePress
+        if ( function_exists( 'trp_get_available_languages' ) ) {
+            $trp_langs = trp_get_available_languages();
+
+            if ( is_array( $trp_langs ) ) {
+                foreach ( $trp_langs as $trp_lang ) {
+                    if ( is_array( $trp_lang ) && ! empty( $trp_lang['slug'] ) ) {
+                        $code = $trp_lang['slug'];
+                    } elseif ( is_string( $trp_lang ) ) {
+                        $code = $trp_lang;
+                    } else {
+                        $code = '';
+                    }
+
+                    if ( $code ) {
+                        if ( function_exists( 'trp_get_home_url' ) ) {
+                            $lang_url = rtrim( trp_get_home_url( $code ), '/' );
+                        } else {
+                            $lang_url = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
+                        }
+
+                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
+                            $urls[] = $lang_url;
+                        }
+                    }
+                }
+            }
+        } elseif ( class_exists( 'TRP_Translate_Press' ) && method_exists( 'TRP_Translate_Press', 'get_settings' ) ) {
+            $trp = TRP_Translate_Press::get_instance();
+
+            if ( method_exists( $trp, 'get_languages' ) ) {
+                $trp_langs = $trp->get_languages();
+
+                if ( is_array( $trp_langs ) ) {
+                    foreach ( $trp_langs as $code => $meta ) {
+                        $lang_url = rtrim( $home_url, '/' ) . '/' . ltrim( $code, '/' );
+
+                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
+                            $urls[] = $lang_url;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Weglot
+        if ( defined( 'WEGLOT_VERSION' ) || function_exists( 'weglot_get_current_language' ) || class_exists( 'Weglot' ) ) {
+            if ( function_exists( 'weglot_get_languages' ) ) {
+                $weglot_langs = weglot_get_languages();
+
+                if ( is_array( $weglot_langs ) ) {
+                    foreach ( $weglot_langs as $code ) {
+                        $lang_url = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
+
+                        if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
+                            $urls[] = $lang_url;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Additional custom language URLs or codes provided in settings.
+        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
+            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
+
+            foreach ( $lines as $line ) {
+                $line = trim( $line );
+
+                if ( $line === '' ) {
+                    continue;
+                }
+
+                $lang_url = '';
+
+                if ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
+                    $parts = explode( ':', $line, 2 );
+                    $code  = trim( $parts[1] );
+
+                    if ( $code !== '' ) {
+                        $lang_url = rtrim( add_query_arg( 'lang', $code, $home_url ), '/' );
+                    }
+                } elseif ( preg_match( '#^https?://#i', $line ) ) {
+                    $lang_url = rtrim( $line, '/' );
+                } elseif ( strpos( $line, '/' ) === 0 ) {
+                    $lang_url = rtrim( $home_url, '/' ) . rtrim( $line, '/' );
+                } else {
+                    // Treat as a language code using the "lang" query var by default.
+                    $lang_url = rtrim( add_query_arg( 'lang', $line, $home_url ), '/' );
+                }
+
+                if ( $lang_url && ! in_array( $lang_url, $urls, true ) ) {
+                    $urls[] = $lang_url;
+                }
+            }
+        }
+
+        return $urls;
+    }
+
+    /**
+     * Try to determine a language code for a given language home URL.
+     * Searches WPML, Polylang, qTranslate-X, TranslatePress and additional settings.
+     *
+     * @param string $home_url Language home URL to match.
+     * @return string|false Language code string if found, otherwise false.
+     */
+    private static function get_language_code_for_home_url( $home_url ) {
+        $home_url = rtrim( (string) $home_url, '/' );
+
+        // WPML
+        if ( has_filter( 'wpml_active_languages' ) || function_exists( 'icl_get_languages' ) ) {
+            $wpml_languages = null;
+
+            if ( has_filter( 'wpml_active_languages' ) ) {
+                $wpml_languages = apply_filters( 'wpml_active_languages', null, array( 'skip_missing' => 0 ) );
+            } elseif ( function_exists( 'icl_get_languages' ) ) {
+                $wpml_languages = icl_get_languages( 'skip_missing=0' );
+            }
+
+            if ( is_array( $wpml_languages ) ) {
+                foreach ( $wpml_languages as $lang ) {
+                    $url = '';
+                    $code = '';
+
+                    if ( ! empty( $lang['url'] ) ) {
+                        $url = rtrim( $lang['url'], '/' );
+                    } elseif ( ! empty( $lang['translated_home'] ) ) {
+                        $url = rtrim( $lang['translated_home'], '/' );
+                    }
+
+                    if ( ! empty( $lang['language_code'] ) ) {
+                        $code = $lang['language_code'];
+                    } elseif ( ! empty( $lang['code'] ) ) {
+                        $code = $lang['code'];
+                    }
+
+                    if ( $url !== '' && $code !== '' && $url === $home_url ) {
+                        return $code;
+                    }
+                }
+            }
+        }
+
+        // Polylang
+        if ( function_exists( 'pll_languages_list' ) && function_exists( 'pll_home_url' ) ) {
+            $polylang_langs = pll_languages_list();
+
+            if ( is_array( $polylang_langs ) ) {
+                foreach ( $polylang_langs as $pll_lang ) {
+                    $url = pll_home_url( $pll_lang );
+                    if ( $url ) {
+                        $url = rtrim( $url, '/' );
+                        if ( $url === $home_url ) {
+                            return $pll_lang;
+                        }
+                    }
+                }
+            }
+        }
+
+        // qTranslate-X: try common candidates (prefix or query)
+        if ( function_exists( 'qtranxf_getSortedLanguages' ) ) {
+            $qlangs = qtranxf_getSortedLanguages();
+            if ( is_array( $qlangs ) ) {
+                foreach ( $qlangs as $k => $v ) {
+                    $code = is_string( $v ) ? $v : ( is_array( $v ) && ! empty( $v['code'] ) ? $v['code'] : '' );
+                    if ( $code ) {
+                        $c1 = rtrim( get_home_url(), '/' ) . '/' . ltrim( $code, '/' );
+                        $c2 = rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' );
+                        if ( $c1 === $home_url || $c2 === $home_url ) {
+                            return $code;
+                        }
+                    }
+                }
+            }
+        }
+
+        // TranslatePress
+        if ( function_exists( 'trp_get_available_languages' ) ) {
+            $trp_langs = trp_get_available_languages();
+            if ( is_array( $trp_langs ) ) {
+                foreach ( $trp_langs as $trp_lang ) {
+                    $code = is_array( $trp_lang ) && ! empty( $trp_lang['slug'] ) ? $trp_lang['slug'] : ( is_string( $trp_lang ) ? $trp_lang : '' );
+                    if ( $code ) {
+                        if ( function_exists( 'trp_get_home_url' ) ) {
+                            $url = rtrim( trp_get_home_url( $code ), '/' );
+                        } else {
+                            $url = rtrim( get_home_url(), '/' ) . '/' . ltrim( $code, '/' );
+                        }
+
+                        if ( $url === $home_url ) {
+                            return $code;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Weglot
+        if ( function_exists( 'weglot_get_languages' ) ) {
+            $weglot_langs = weglot_get_languages();
+            if ( is_array( $weglot_langs ) ) {
+                foreach ( $weglot_langs as $code ) {
+                    $url = rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' );
+                    if ( $url === $home_url ) {
+                        return $code;
+                    }
+                }
+            }
+        }
+
+        // Additional custom language URLs: lines may be full URLs or codes
+        if ( ! empty( Cache_Enabler_Engine::$settings['additional_language_urls'] ) ) {
+            $lines = preg_split( '/\r\n|\r|\n/', (string) Cache_Enabler_Engine::$settings['additional_language_urls'] );
+            foreach ( $lines as $line ) {
+                $line = trim( $line );
+                if ( $line === '' ) {
+                    continue;
+                }
+
+                if ( preg_match( '#^https?://#i', $line ) ) {
+                    if ( rtrim( $line, '/' ) === $home_url ) {
+                        // No code known here — return host as code fallback
+                        return $home_url;
+                    }
+                } elseif ( stripos( $line, 'lang:' ) === 0 || stripos( $line, 'code:' ) === 0 ) {
+                    $parts = explode( ':', $line, 2 );
+                    $code  = trim( $parts[1] );
+                    $candidate = rtrim( add_query_arg( 'lang', $code, get_home_url() ), '/' );
+                    if ( $candidate === $home_url ) {
+                        return $code;
+                    }
+                } else {
+                    // Treat as code
+                    $candidate = rtrim( add_query_arg( 'lang', $line, get_home_url() ), '/' );
+                    if ( $candidate === $home_url ) {
+                        return $line;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
