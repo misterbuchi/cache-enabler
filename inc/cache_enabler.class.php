@@ -1264,39 +1264,52 @@ final class Cache_Enabler {
 
         $language_items = self::get_language_items();
 
-        // Add language submenu items only if the current page has a translation in that language.
-        $current_page_id = self::get_current_page_post_id();
-        foreach ( $language_items as $lang_url => $label ) {
-            // Avoid adding the primary site home twice.
-            if ( rtrim( $lang_url, '/' ) === $site_home ) {
-                continue;
+        // If language items were detected, add per-language site-clear entries under the "Clear Site Cache" parent.
+        if ( ! empty( $language_items ) && is_array( $language_items ) ) {
+            // Normalize and deduplicate language items by host+path to avoid duplicated labels caused by
+            // different URL variants (with/without protocol, trailing slash, query var vs prefix).
+            $unique_items_site = array();
+
+            foreach ( $language_items as $lang_url => $label ) {
+                $u = rtrim( (string) $lang_url, '/' );
+                $parsed = wp_parse_url( $u );
+
+                // If parse failed, use the raw value as key.
+                if ( empty( $parsed ) || empty( $parsed['host'] ) ) {
+                    $key = strtolower( $u );
+                } else {
+                    $host = strtolower( $parsed['host'] );
+                    $path = isset( $parsed['path'] ) ? rtrim( $parsed['path'], '/' ) : '';
+                    $key = $host . ( $path !== '' ? "/" . ltrim( $path, '/' ) : '' );
+                }
+
+                if ( ! isset( $unique_items_site[ $key ] ) ) {
+                    $unique_items_site[ $key ] = array( 'url' => $u, 'label' => $label );
+                }
             }
 
-            $lang_code = self::get_language_code_for_home_url( $lang_url );
-            $translated_page_id = 0;
+            foreach ( $unique_items_site as $item ) {
+                $lang_url = $item['url'];
+                $label = $item['label'];
 
-            if ( $current_page_id && $lang_code ) {
-                $translated_page_id = self::get_translated_page_id_for_language( $current_page_id, $lang_code );
+                $wp_admin_bar->add_menu(
+                    array(
+                        'id'     => 'cache_enabler_clear_cache_lang_' . md5( $lang_url ),
+                        'href'   => wp_nonce_url( add_query_arg( array(
+                                        '_cache'  => 'cache-enabler',
+                                        '_action' => 'clearlang',
+                                        'lang_url' => rawurlencode( rtrim( $lang_url, '/' ) ),
+                                    ) ), 'cache_enabler_clear_cache_nonce' ),
+                        'parent' => 'cache_enabler_clear_cache',
+                        'title'  => esc_html__( 'Clear language: ', 'cache-enabler' ) . ' ' . esc_html( $label ),
+                        'meta'   => array( 'title' => esc_html( $label ) ),
+                    )
+                );
             }
-
-            if ( $current_page_id && $lang_code && ! $translated_page_id ) {
-                continue;
-            }
-
-            $wp_admin_bar->add_menu(
-                array(
-                    'id'     => 'cache_enabler_clear_lang_' . md5( $lang_url ),
-                    'href'   => wp_nonce_url( add_query_arg( array(
-                                    '_cache'    => 'cache-enabler',
-                                    '_action'   => 'clearlang',
-                                    'lang_url'  => rawurlencode( $lang_url ),
-                                ) ), 'cache_enabler_clear_cache_nonce' ),
-                    'parent' => 'cache_enabler_clear_cache',
-                    'title'  => esc_html( $label ),
-                    'meta'   => array( 'title' => esc_html( $label ) ),
-                )
-            );
         }
+
+        // Determine current page/post ID for page-level actions.
+        $current_page_id = self::get_current_page_post_id();
 
         // Page-level clear still for front-end.
         if ( ! is_admin() ) {
@@ -1331,7 +1344,32 @@ final class Cache_Enabler {
 
             // If language items were detected, add current-language page-clear entries only for translations.
             if ( ! empty( $language_items ) && is_array( $language_items ) ) {
+                // Normalize and deduplicate language items by host+path to avoid duplicated labels caused by
+                // different URL variants (with/without protocol, trailing slash, query var vs prefix).
+                $unique_items = array();
+
                 foreach ( $language_items as $lang_url => $label ) {
+                    $u = rtrim( (string) $lang_url, '/' );
+                    $parsed = wp_parse_url( $u );
+
+                    // If parse failed, use the raw value as key.
+                    if ( empty( $parsed ) || empty( $parsed['host'] ) ) {
+                        $key = strtolower( $u );
+                    } else {
+                        $host = strtolower( $parsed['host'] );
+                        $path = isset( $parsed['path'] ) ? rtrim( $parsed['path'], '/' ) : '';
+                        $key = $host . ( $path !== '' ? "/" . ltrim( $path, '/' ) : '' );
+                    }
+
+                    if ( ! isset( $unique_items[ $key ] ) ) {
+                        $unique_items[ $key ] = array( 'url' => $u, 'label' => $label );
+                    }
+                }
+
+                foreach ( $unique_items as $item ) {
+                    $lang_url = $item['url'];
+                    $label = $item['label'];
+
                     $lang_code = self::get_language_code_for_home_url( $lang_url );
                     $translated_page_id = 0;
 
@@ -2413,6 +2451,99 @@ final class Cache_Enabler {
                 if ( $code !== '' ) {
                     $add_item( rtrim( get_home_url( $blog_id ), '/' ) . '/' . ltrim( $code, '/' ), $code );
                     $add_item( rtrim( add_query_arg( 'lang', $code, $home_url ), '/' ), $code );
+                }
+            }
+
+            // qTranslate-X: try to detect language-specific domains if configured (domain per language).
+            // qTranslate-X exposes a global $q_config which may contain domain/URL values. Scan it defensively
+            // and add any discovered absolute URLs or domain-like strings as language home URLs.
+            if ( isset( $GLOBALS['q_config'] ) ) {
+                $qconf = $GLOBALS['q_config'];
+                // Convert object to array of properties if needed.
+                $qvars = is_object( $qconf ) ? get_object_vars( $qconf ) : (array) $qconf;
+
+                foreach ( $qvars as $k => $v ) {
+                    // If value is a string, try several heuristics:
+                    if ( is_string( $v ) ) {
+                        $s = trim( $v );
+
+                        // Absolute URL with scheme.
+                        if ( preg_match( '#^https?://#i', $s ) ) {
+                            $add_item( rtrim( $s, '/' ), (string) $k );
+                            continue;
+                        }
+
+                        // Domain-like string (e.g. vannerie.ch or vannerie.ch/fr) without scheme.
+                        if ( preg_match( '#^[\w\-\.]+\.[a-z]{2,}(/.*)?$#i', $s ) ) {
+                            // If it starts with a slash it's a path -> build relative to home_url.
+                            if ( strpos( $s, '/' ) === 0 ) {
+                                $candidate = rtrim( $home_url, '/' ) . $s;
+                            } else {
+                                // Assume https if no scheme provided.
+                                $candidate = 'https://' . $s;
+                            }
+
+                            $add_item( rtrim( $candidate, '/' ), (string) $k );
+                            continue;
+                        }
+
+                        // If it's something like '/de' or 'de', fall back to prefix handling elsewhere.
+                    }
+
+                    // If value is an array/object, inspect its members for URL-like values and language-keyed mappings.
+                    if ( is_array( $v ) || is_object( $v ) ) {
+                        $arr = (array) $v;
+
+                        // First pass: look for obvious URL-like values.
+                        foreach ( $arr as $kk => $vv ) {
+                            if ( is_string( $vv ) ) {
+                                $s = trim( $vv );
+
+                                if ( preg_match( '#^https?://#i', $s ) ) {
+                                    $label = is_string( $kk ) ? $kk : $k;
+                                    $add_item( rtrim( $s, '/' ), (string) $label );
+                                    continue;
+                                }
+
+                                if ( preg_match( '#^[\w\-\.]+\.[a-z]{2,}(/.*)?$#i', $s ) ) {
+                                    $label = is_string( $kk ) ? $kk : $k;
+                                    $candidate = ( strpos( $s, '/' ) === 0 ) ? rtrim( $home_url, '/' ) . $s : 'https://' . $s;
+                                    $add_item( rtrim( $candidate, '/' ), (string) $label );
+                                    continue;
+                                }
+
+                                if ( in_array( $kk, array( 'home', 'url', 'siteurl', 'domain' ), true ) && $s !== '' ) {
+                                    // Build absolute URL if necessary.
+                                    if ( preg_match( '#^https?://#i', $s ) ) {
+                                        $add_item( rtrim( $s, '/' ), (string) $kk );
+                                    } elseif ( strpos( $s, '/' ) === 0 ) {
+                                        $add_item( rtrim( $home_url, '/' ) . $s, (string) $kk );
+                                    } else {
+                                        $add_item( rtrim( 'https://' . $s, '/' ), (string) $kk );
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Second pass: if the array appears to be keyed by language codes, treat keys as codes and values as domains/paths.
+                        foreach ( $arr as $kk => $vv ) {
+                            if ( is_string( $kk ) && preg_match( '/^[a-z]{2}(?:-[A-Z]{2})?$/', $kk ) && is_string( $vv ) ) {
+                                $s = trim( $vv );
+                                if ( $s === '' ) {
+                                    continue;
+                                }
+
+                                if ( preg_match( '#^https?://#i', $s ) ) {
+                                    $add_item( rtrim( $s, '/' ), (string) $kk );
+                                } elseif ( preg_match( '#^[\w\-\.]+\.[a-z]{2,}(/.*)?$#i', $s ) ) {
+                                    $add_item( rtrim( 'https://' . $s, '/' ), (string) $kk );
+                                } elseif ( strpos( $s, '/' ) === 0 ) {
+                                    $add_item( rtrim( $home_url, '/' ) . $s, (string) $kk );
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
