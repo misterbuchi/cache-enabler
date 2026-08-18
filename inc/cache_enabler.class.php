@@ -2639,6 +2639,81 @@ final class Cache_Enabler {
             }
 
             $language_items = $filtered;
+
+            // Prefer domain-per-language when available: group detected URLs by language code (from label, path, or query)
+            $home_parsed = wp_parse_url( $home_url );
+            $home_host = isset( $home_parsed['host'] ) ? $home_parsed['host'] : '';
+
+            $by_code = array();
+            foreach ( $language_items as $u => $lbl ) {
+                $code = false;
+
+                // Label looks like a language code (eg. 'de', 'fr' or 'en-US').
+                if ( is_string( $lbl ) && preg_match( '/^[a-z]{2}(?:-[A-Z]{2})?$/', $lbl ) ) {
+                    $code = $lbl;
+                }
+
+                // Path like /fr or /de
+                if ( ! $code ) {
+                    $p = wp_parse_url( $u );
+                    if ( ! empty( $p['path'] ) ) {
+                        $parts = explode( '/', trim( $p['path'], '/' ) );
+                        if ( count( $parts ) === 1 && preg_match( '/^[a-z]{2}(?:-[A-Z]{2})?$/', $parts[0] ) ) {
+                            $code = $parts[0];
+                        }
+                    }
+
+                    if ( ! $code && ! empty( $p['query'] ) && preg_match( '/(?:^|&)lang=([^&]+)/', $p['query'], $m2 ) ) {
+                        $code = $m2[1];
+                    }
+                }
+
+                // Last resort: plugin-specific detection.
+                if ( ! $code ) {
+                    $maybe = self::get_language_code_for_home_url( $u );
+                    if ( $maybe ) {
+                        $code = $maybe;
+                    }
+                }
+
+                if ( $code ) {
+                    $by_code[ $code ][] = $u;
+                } else {
+                    $by_code['_unknown'][] = $u;
+                }
+            }
+
+            $final = array();
+            foreach ( $by_code as $code => $urls ) {
+                if ( $code === '_unknown' ) {
+                    foreach ( $urls as $uu ) {
+                        $final[ $uu ] = $language_items[ $uu ];
+                    }
+                    continue;
+                }
+
+                // If any url for this code uses a different host than home_host, prefer those external host urls.
+                $external = array();
+                foreach ( $urls as $uu ) {
+                    $p = wp_parse_url( $uu );
+                    $host = isset( $p['host'] ) ? $p['host'] : '';
+                    if ( $host !== '' && strtolower( $host ) !== strtolower( $home_host ) ) {
+                        $external[] = $uu;
+                    }
+                }
+
+                if ( ! empty( $external ) ) {
+                    foreach ( $external as $uu ) {
+                        $final[ $uu ] = $language_items[ $uu ];
+                    }
+                } else {
+                    foreach ( $urls as $uu ) {
+                        $final[ $uu ] = $language_items[ $uu ];
+                    }
+                }
+            }
+
+            $language_items = $final;
         }
 
         return $language_items;
