@@ -2714,6 +2714,44 @@ final class Cache_Enabler {
             }
 
             $language_items = $final;
+
+            // If the site home URL duplicates a language that also has a path on the same host
+            // (e.g., /de present and the home host is korbundstuhl.ch), prefer the language path
+            // and remove the bare home URL from the language list to avoid duplication.
+            $site_home = rtrim( $home_url, '/' );
+            $site_parsed = wp_parse_url( $site_home );
+            $site_host = isset( $site_parsed['host'] ) ? strtolower( $site_parsed['host'] ) : '';
+
+            if ( $site_host && isset( $by_code ) && is_array( $by_code ) ) {
+                // Determine probable default locale language code for the site (e.g., 'de' from 'de_CH').
+                $locale = get_locale();
+                $default_code = '';
+                if ( is_string( $locale ) && preg_match( '/^([a-z]{2})(?:[_-][A-Z]{2})?$/', $locale, $ml ) ) {
+                    $default_code = $ml[1];
+                }
+
+                if ( $default_code && isset( $by_code[ $default_code ] ) ) {
+                    // If any of the default_code urls use the same host as home and are not the bare home, prefer them.
+                    $prefer_path = false;
+                    foreach ( $by_code[ $default_code ] as $u ) {
+                        $p = wp_parse_url( $u );
+                        $h = isset( $p['host'] ) ? strtolower( $p['host'] ) : '';
+                        $path = isset( $p['path'] ) ? trim( $p['path'], '/' ) : '';
+                        if ( $h === $site_host && $path !== '' ) {
+                            $prefer_path = true;
+                            break;
+                        }
+                    }
+
+                    if ( $prefer_path ) {
+                        foreach ( $language_items as $u => $lbl ) {
+                            if ( rtrim( $u, '/' ) === $site_home ) {
+                                unset( $language_items[ $u ] );
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         return $language_items;
