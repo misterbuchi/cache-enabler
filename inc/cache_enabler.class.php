@@ -1326,21 +1326,26 @@ final class Cache_Enabler {
                 )
             );
 
+            // Add "Clear All Translations" for the current page. If a post ID is available, include it; otherwise
+            // provide a broad action that will attempt to clear the current request path across detected language home URLs.
+            $translations_href_args = array(
+                '_cache'  => 'cache-enabler',
+                '_action' => 'cleartranslations',
+            );
+
             if ( $current_page_id ) {
-                $wp_admin_bar->add_menu(
-                    array(
-                        'id'     => 'cache_enabler_clear_page_translations',
-                        'href'   => wp_nonce_url( add_query_arg( array(
-                                        '_cache'  => 'cache-enabler',
-                                        '_action' => 'cleartranslations',
-                                        'post_id' => (int) $current_page_id,
-                                    ) ), 'cache_enabler_clear_cache_nonce' ),
-                        'parent' => 'cache_enabler_clear_page_cache',
-                        'title'  => esc_html__( 'Clear All Translations', 'cache-enabler' ),
-                        'meta'   => array( 'title' => esc_html__( 'Clear All Translations', 'cache-enabler' ) ),
-                    )
-                );
+                $translations_href_args['post_id'] = (int) $current_page_id;
             }
+
+            $wp_admin_bar->add_menu(
+                array(
+                    'id'     => 'cache_enabler_clear_page_translations',
+                    'href'   => wp_nonce_url( add_query_arg( $translations_href_args ), 'cache_enabler_clear_cache_nonce' ),
+                    'parent' => 'cache_enabler_clear_page_cache',
+                    'title'  => esc_html__( 'Clear All Translations', 'cache-enabler' ),
+                    'meta'   => array( 'title' => esc_html__( 'Clear All Translations', 'cache-enabler' ) ),
+                )
+            );
 
             // If language items were detected, add current-language page-clear entries only for translations.
             if ( ! empty( $language_items ) && is_array( $language_items ) ) {
@@ -1647,6 +1652,33 @@ final class Cache_Enabler {
                             self::clear_page_cache_by_url( $translation_url );
                             $cleared_urls[] = $translation_url;
                         }
+                    }
+                }
+            } else {
+                // No post ID available — attempt to clear translations by mapping the current request path
+                // onto each detected language home URL. This is useful for front page or non-post URLs.
+                $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false ) : '';
+                // Remove query string — translations mapping should target path only.
+                $request_path = (string) parse_url( $request_uri, PHP_URL_PATH );
+
+                if ( $request_path === '' ) {
+                    $request_path = '/';
+                }
+
+                $lang_homes = self::get_language_home_urls();
+
+                foreach ( (array) $lang_homes as $lh ) {
+                    if ( ! $lh || ! filter_var( $lh, FILTER_VALIDATE_URL ) ) {
+                        continue;
+                    }
+
+                    $target = rtrim( $lh, '/' ) . $request_path;
+                    // Normalize trailing slash removal
+                    $target = rtrim( $target, '/' );
+
+                    if ( ! in_array( $target, $cleared_urls, true ) ) {
+                        self::clear_page_cache_by_url( $target );
+                        $cleared_urls[] = $target;
                     }
                 }
             }
