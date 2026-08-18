@@ -1329,10 +1329,8 @@ final class Cache_Enabler {
                 );
             }
 
-            // If language items were detected, add per-language page-clear entries for translated versions only.
+            // If language items were detected, add current-language page-clear entries only for translations.
             if ( ! empty( $language_items ) && is_array( $language_items ) ) {
-                $request_path = Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false );
-
                 foreach ( $language_items as $lang_url => $label ) {
                     $lang_code = self::get_language_code_for_home_url( $lang_url );
                     $translated_page_id = 0;
@@ -1352,11 +1350,11 @@ final class Cache_Enabler {
                                             '_cache'   => 'cache-enabler',
                                             '_action'  => 'clearlangurl',
                                             'lang_url' => rawurlencode( rtrim( $lang_url, '/' ) ),
-                                            'page'     => rawurlencode( $request_path ),
+                                            'post_id'  => (int) $current_page_id,
                                         ) ), 'cache_enabler_clear_cache_nonce' ),
                             'parent' => 'cache_enabler_clear_page_cache',
-                            'title'  => esc_html__( 'Clear Current Language', 'cache-enabler' ) . ' (' . esc_html( $label ) . ')',
-                            'meta'   => array( 'title' => esc_html__( 'Clear Current Language', 'cache-enabler' ) . ' (' . esc_html( $label ) . ')' ),
+                            'title'  => esc_html( $label ),
+                            'meta'   => array( 'title' => esc_html( $label ) ),
                         )
                     );
                 }
@@ -1554,19 +1552,12 @@ final class Cache_Enabler {
                     }
                 }
 
-                // Page path (including query) - falls back to current request if not provided.
-                $page_path = '/';
-                if ( ! empty( $_GET['page'] ) ) {
-                    $page_path = urldecode( wp_unslash( $_GET['page'] ) );
-                } else {
-                    $page_path = Cache_Enabler_Engine::sanitize_server_input( $_SERVER['REQUEST_URI'], false );
-                }
+                // Prefer the post translation permalink over building a URL from the current request path.
+                $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : self::get_current_page_post_id();
+                $lang_code = self::get_language_code_for_home_url( $lang_url );
 
                 if ( filter_var( $lang_url, FILTER_VALIDATE_URL ) ) {
                     $target = '';
-
-                    $post_id = self::get_current_page_post_id();
-                    $lang_code = self::get_language_code_for_home_url( $lang_url );
 
                     if ( $post_id && $lang_code ) {
                         $translated_id = self::get_translated_page_id_for_language( $post_id, $lang_code );
@@ -1578,13 +1569,19 @@ final class Cache_Enabler {
                         }
                     }
 
-                    // Fallback: combine lang home and request path.
-                    if ( $target === '' ) {
-                        $target = rtrim( $lang_url, '/' ) . '/' . ltrim( $page_path, '/' );
-                        $target = preg_replace( '#([^:])/+#', '$1/', $target );
+                    if ( $target === '' && $post_id ) {
+                        $current_permalink = get_permalink( $post_id );
+                        if ( $current_permalink ) {
+                            $target = rtrim( $current_permalink, '/' );
+                        }
                     }
 
-                    // Clear this specific page cache (no subpages) on the target host.
+                    // Fallback: if no permalink could be resolved, avoid reusing the current request path because
+                    // it can point to the wrong language/domain and generate invalid 404 targets.
+                    if ( $target === '' ) {
+                        $target = rtrim( $lang_url, '/' );
+                    }
+
                     self::clear_page_cache_by_url( $target );
                     $cleared_urls[] = $target;
                 }
